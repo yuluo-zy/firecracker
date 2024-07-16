@@ -211,9 +211,13 @@ impl Net {
         let tap = Tap::open_named(tap_if_name).map_err(NetError::TapOpen)?;
 
         // Set offload flags to match the virtio features below.
+        // TUN_F_CSUM：校验和卸载。
+        // TUN_F_UFO：超大帧卸载。
+        // TUN_F_TSO4：IPv4 分段卸载。
+        // TUN_F_TSO6：IPv6 分段卸载。
         tap.set_offload(gen::TUN_F_CSUM | gen::TUN_F_UFO | gen::TUN_F_TSO4 | gen::TUN_F_TSO6)
             .map_err(NetError::TapSetOffload)?;
-
+        // 获取虚拟网络头部长度：
         let vnet_hdr_size = i32::try_from(vnet_hdr_len()).unwrap();
         tap.set_vnet_hdr_size(vnet_hdr_size)
             .map_err(NetError::TapSetVnetHdrSize)?;

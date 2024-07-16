@@ -78,6 +78,20 @@ pub type __s32 = ::std::os::raw::c_int;
 pub type __u32 = ::std::os::raw::c_uint;
 pub type __u64 = ::std::os::raw::c_ulonglong;
 pub type __kernel_rwf_t = ::std::os::raw::c_int;
+/**
+pub struct io_uring_sqe {
+    pub opcode: __u8, // 操作码，指定要执行的I/O操作类型
+    pub flags: __u8, // 标志位，用于设置操作的特定标志
+    pub ioprio: __u16, // I/O优先级
+    pub fd: __s32, // 文件描述符，指定要操作的文件
+    pub __bindgen_anon_1: io_uring_sqe__bindgen_ty_1, // 匿名联合体1，用于不同操作类型的参数
+    pub __bindgen_anon_2: io_uring_sqe__bindgen_ty_2, // 匿名联合体2，用于不同操作类型的参数
+    pub len: __u32, // 操作的长度（字节数）
+    pub __bindgen_anon_3: io_uring_sqe__bindgen_ty_3, // 匿名联合体3，用于不同操作类型的参数
+    pub user_data: __u64, // 用户数据，可以用于标识请求
+    pub __bindgen_anon_4: io_uring_sqe__bindgen_ty_4, // 匿名联合体4，用于不同操作类型的参数
+}
+**/
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct io_uring_sqe {
