@@ -17,7 +17,7 @@ impl Net {
     const PROCESS_RX_RATE_LIMITER: u32 = 4;
     const PROCESS_TX_RATE_LIMITER: u32 = 5;
 
-    fn register_runtime_events(&self, ops: &mut EventOps) {
+    fn  register_runtime_events(&self, ops: &mut EventOps) {
         if let Err(err) = ops.add(Events::with_data(
             &self.queue_evts[RX_INDEX],
             Self::PROCESS_VIRTQ_RX,

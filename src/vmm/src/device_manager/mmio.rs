@@ -112,7 +112,11 @@ fn add_virtio_aml(dsdt_data: &mut Vec<u8>, addr: u64, len: u64, irq: u32) {
 /// Manages the complexities of registering a MMIO device.
 #[derive(Debug)]
 pub struct MMIODeviceManager {
-    pub(crate) bus: crate::devices::Bus,
+    pub(crate) bus: crate::devices::Bus, // mmio总线对象，内部通过BTree来组织所有mmio设备对象
+    //  firecracker采用了一种针对虚拟化的简单总线协议-mmio作为实现virtio的基础。
+    // mmio总线预留了0xD000000~0xFFFFFFFF的地址空间作为所有mmio设备的配置空间，并使用5~15号irq作为所有mmio设备可使用的中断号；
+    // 每个mmio设备通过虚拟机内核启动时的命令行参数来上报设备资源信息(如配置空间地址范围和使用的中断号)，
+    // 这是一种静态的设备发现机制，它不像PCI设备的总线枚举机制那么灵活，因此不支持设备热插拔等高级特性。
     pub(crate) id_to_dev_info: HashMap<(DeviceType, String), MMIODeviceInfo>,
     // We create the AML byte code for every VirtIO device in the order we build
     // it, so that we ensure the root block device is appears first in the DSDT.
@@ -190,9 +194,13 @@ impl MMIODeviceManager {
                 let io_addr = IoEventAddress::Mmio(
                     device_info.addr + u64::from(crate::devices::virtio::NOTIFY_REG_OFFSET),
                 );
+                // register_ioevent 函数的主要功能是将一个 EventFd 与一个特定的内存地址及其数据匹配值关联起来。
+                // 这在虚拟化环境中特别有用，
+                // 因为它允许虚拟机管理程序（如 KVM）监控内存地址上的特定 IO 操作，并在这些操作发生时触发事件。
                 vm.register_ioevent(queue_evt, &io_addr, u32::try_from(i).unwrap())
                     .map_err(MmioError::RegisterIoEvent)?;
             }
+            // 设备通过 IO 事件通知虚拟机管理程序某些操作的发生，虚拟机管理程序通过中断事件通知客户机操作系统进行处理。
             vm.register_irqfd(locked_device.interrupt_evt(), device_info.irqs[0])
                 .map_err(MmioError::RegisterIrqFd)?;
         }

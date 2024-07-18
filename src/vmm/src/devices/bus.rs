@@ -46,7 +46,7 @@ impl PartialOrd for BusRange {
 /// This doesn't have any restrictions on what kind of device or address space this applies to. The
 /// only restriction is that no two devices can overlap in this address space.
 #[derive(Debug, Clone, Default)]
-pub struct Bus {
+pub struct Bus { // mmio总线对象，内部通过BTree来组织所有mmio设备对象
     devices: BTreeMap<BusRange, Arc<Mutex<BusDevice>>>,
 }
 

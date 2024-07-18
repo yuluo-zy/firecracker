@@ -114,22 +114,22 @@ pub struct Net {
     /// The backend for this device: a tap.
     pub tap: Tap,
 
-    pub(crate) avail_features: u64,
-    pub(crate) acked_features: u64,
+    pub(crate) avail_features: u64, // 表示网络设备支持的可用功能，是一个位掩码，编码了设备支持的所有特性。
+    pub(crate) acked_features: u64, // 表示已确认的功能集，是一个位掩码，编码了设备驱动程序已确认并使用的特性。
 
     pub(crate) queues: Vec<Queue>,
     pub(crate) queue_evts: Vec<EventFd>,
 
     pub(crate) rx_rate_limiter: RateLimiter,
     pub(crate) tx_rate_limiter: RateLimiter,
-
+// 标识是否有延迟处理的接收帧（数据包）。如果为 true，表示有数据包需要稍后处理。
     pub(crate) rx_deferred_frame: bool,
 
     rx_bytes_read: usize,
     rx_frame_buf: [u8; MAX_BUFFER_SIZE],
 
     tx_frame_headers: [u8; frame_hdr_len()],
-
+// 中断触发器，用于通知虚拟机管理程序（VMM）或主机系统网络设备状态变化或需要处理。
     pub(crate) irq_trigger: IrqTrigger,
 
     pub(crate) config_space: ConfigSpace,
@@ -141,6 +141,7 @@ pub struct Net {
     /// The MMDS stack corresponding to this interface.
     /// Only if MMDS transport has been associated with it.
     pub mmds_ns: Option<MmdsNetworkStack>,
+    // 网络设备的性能指标，使用 Arc 进行共享和线程安全访问，用于统计和监控网络设备的性能。
     pub(crate) metrics: Arc<NetDeviceMetrics>,
 }
 
@@ -174,7 +175,7 @@ impl Net {
         let mut queues = Vec::new();
         for size in NET_QUEUE_SIZES {
             queue_evts.push(EventFd::new(libc::EFD_NONBLOCK).map_err(NetError::EventFd)?);
-            queues.push(Queue::new(size));
+            queues.push(Queue::new(size)); // 两个256
         }
 
         Ok(Net {
@@ -201,6 +202,7 @@ impl Net {
     }
 
     /// Create a new virtio network device given the interface name.
+    /// 创建tap 然后进行其他配置
     pub fn new(
         id: String,
         tap_if_name: &str,
@@ -211,10 +213,10 @@ impl Net {
         let tap = Tap::open_named(tap_if_name).map_err(NetError::TapOpen)?;
 
         // Set offload flags to match the virtio features below.
-        // TUN_F_CSUM：校验和卸载。
-        // TUN_F_UFO：超大帧卸载。
-        // TUN_F_TSO4：IPv4 分段卸载。
-        // TUN_F_TSO6：IPv6 分段卸载。
+        // TUN_F_CSUM：校验和卸载
+        // TUN_F_UFO：超大帧卸载
+        // TUN_F_TSO4：IPv4 分段卸载
+        // TUN_F_TSO6：IPv6 分段卸载
         tap.set_offload(gen::TUN_F_CSUM | gen::TUN_F_UFO | gen::TUN_F_TSO4 | gen::TUN_F_TSO6)
             .map_err(NetError::TapSetOffload)?;
         // 获取虚拟网络头部长度：
