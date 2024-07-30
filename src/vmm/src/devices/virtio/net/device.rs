@@ -210,7 +210,7 @@ impl Net {
         rx_rate_limiter: RateLimiter,
         tx_rate_limiter: RateLimiter,
     ) -> Result<Self, NetError> {
-        let tap = Tap::open_named(tap_if_name).map_err(NetError::TapOpen)?;
+        let tap = Tap::open_named(tap_if_name, false).map_err(NetError::TapOpen)?;
 
         // Set offload flags to match the virtio features below.
         // TUN_F_CSUM：校验和卸载

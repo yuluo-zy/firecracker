@@ -12,7 +12,7 @@ use std::os::raw::*;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 
 use utils::ioctl::{ioctl_with_mut_ref, ioctl_with_ref, ioctl_with_val};
-use utils::{ioctl_ioc_nr, ioctl_iow_nr};
+use utils::{ioctl_ioc_nr, ioctl_iow_nr, ioctl_ior_nr};
 
 use crate::devices::virtio::iovec::IoVecBuffer;
 use crate::devices::virtio::net::gen;
@@ -37,12 +37,17 @@ pub enum TapError {
     SetOffloadFlags(IoError),
     /// Error while setting size of the vnet header: {0}
     SetSizeOfVnetHdr(IoError),
+    /// Error read Tap features,
+    GetFeatures,
+    /// Error no kernel support for IFF_MULTI_QUEUE available
+    KernelSetMultiQueue,
 }
 
 const TUNTAP: ::std::os::raw::c_uint = 84;
 ioctl_iow_nr!(TUNSETIFF, TUNTAP, 202, ::std::os::raw::c_int);
 ioctl_iow_nr!(TUNSETOFFLOAD, TUNTAP, 208, ::std::os::raw::c_uint);
 ioctl_iow_nr!(TUNSETVNETHDRSZ, TUNTAP, 216, ::std::os::raw::c_int);
+ioctl_ior_nr!(TUNGETFEATURES, TUNTAP, 207, ::std::os::raw::c_uint);
 
 /// Handle for a network tap interface.
 ///
@@ -122,7 +127,7 @@ impl Tap {
     /// # Arguments
     ///
     /// * `if_name` - the name of the interface.
-    pub fn open_named(if_name: &str) -> Result<Tap, TapError> {
+    pub fn open_named(if_name: &str, multi_queue: bool) -> Result<Tap, TapError> {
         // SAFETY: Open calls are safe because we give a constant null-terminated
         // string and verify the result.
         let fd = unsafe {
@@ -139,9 +144,18 @@ impl Tap {
         let tuntap = unsafe { File::from_raw_fd(fd) };
 
         let terminated_if_name = build_terminated_if_name(if_name)?;
+        let mut flags = gen::IFF_TAP | gen::IFF_NO_PI | gen::IFF_VNET_HDR;
+        if multi_queue {
+            let mut features = 0;
+            let ret = unsafe { ioctl_with_mut_ref(&tuntap, TUNGETFEATURES(), &mut features) };
+            if ret < 0 { return Err(TapError::GetFeatures); }
+            if features & gen::IFF_MULTI_QUEUE == 0 { return Err(TapError::KernelSetMultiQueue); }
+            flags |= gen::IFF_MULTI_QUEUE;
+        }
+
         let ifreq = IfReqBuilder::new()
             .if_name(&terminated_if_name)
-            .flags(i16::try_from(gen::IFF_TAP | gen::IFF_NO_PI | gen::IFF_VNET_HDR).unwrap())
+            .flags(i16::try_from(flags).unwrap())
             .execute(&tuntap, TUNSETIFF())
             .map_err(|io_error| TapError::IfreqExecuteError(io_error, if_name.to_owned()))?;
 
@@ -246,42 +260,42 @@ pub mod tests {
         });
 
         // Empty name - The tap should be named "tap0" by default
-        let tap = Tap::open_named("").unwrap();
+        let tap = Tap::open_named("", false).unwrap();
         assert_eq!(b"tap0\0\0\0\0\0\0\0\0\0\0\0\0", &tap.if_name);
         assert_eq!("tap0", tap.if_name_as_str());
 
         // Test using '%d' to have the kernel assign an unused name,
         // and that we correctly copy back that generated name
-        let tap = Tap::open_named("tap%d").unwrap();
+        let tap = Tap::open_named("tap%d", false).unwrap();
         // '%d' should be replaced with _some_ number, although we don't know what was the next
         // available one. Just assert that '%d' definitely isn't there anymore.
         assert_ne!(b"tap%d", &tap.if_name[..5]);
 
         // 16 characters - too long.
         let name = "a123456789abcdef";
-        match Tap::open_named(name) {
+        match Tap::open_named(name, false) {
             Err(TapError::InvalidIfname) => (),
             _ => panic!("Expected Error::InvalidIfname"),
         };
 
         // 15 characters - OK.
         let name = "a123456789abcde";
-        let tap = Tap::open_named(name).unwrap();
+        let tap = Tap::open_named(name, false).unwrap();
         assert_eq!(&format!("{}\0", name).as_bytes(), &tap.if_name);
         assert_eq!(name, tap.if_name_as_str());
     }
 
     #[test]
     fn test_tap_exclusive_open() {
-        let _tap1 = Tap::open_named("exclusivetap").unwrap();
+        let _tap1 = Tap::open_named("exclusivetap", false).unwrap();
         // Opening same tap device a second time should not be permitted.
-        Tap::open_named("exclusivetap").unwrap_err();
+        Tap::open_named("exclusivetap", false).unwrap_err();
     }
 
     #[test]
     fn test_set_options() {
         // This line will fail to provide an initialized FD if the test is not run as root.
-        let tap = Tap::open_named("").unwrap();
+        let tap = Tap::open_named("", false).unwrap();
         tap.set_vnet_hdr_size(16).unwrap();
         tap.set_offload(0).unwrap();
 
@@ -302,13 +316,13 @@ pub mod tests {
 
     #[test]
     fn test_raw_fd() {
-        let tap = Tap::open_named("").unwrap();
+        let tap = Tap::open_named("", false).unwrap();
         assert_eq!(tap.as_raw_fd(), tap.tap_file.as_raw_fd());
     }
 
     #[test]
     fn test_read() {
-        let mut tap = Tap::open_named("").unwrap();
+        let mut tap = Tap::open_named("", false).unwrap();
         enable(&tap);
         let tap_traffic_simulator = TapTrafficSimulator::new(if_index(&tap));
 
@@ -325,7 +339,7 @@ pub mod tests {
 
     #[test]
     fn test_write() {
-        let mut tap = Tap::open_named("").unwrap();
+        let mut tap = Tap::open_named("", false).unwrap();
         enable(&tap);
         let tap_traffic_simulator = TapTrafficSimulator::new(if_index(&tap));
 
@@ -345,7 +359,7 @@ pub mod tests {
 
     #[test]
     fn test_write_iovec() {
-        let mut tap = Tap::open_named("").unwrap();
+        let mut tap = Tap::open_named("", false).unwrap();
         enable(&tap);
         let tap_traffic_simulator = TapTrafficSimulator::new(if_index(&tap));
 
