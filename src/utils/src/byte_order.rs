@@ -1,6 +1,8 @@
 // Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::mem::size_of;
+use std::slice::{from_raw_parts, from_raw_parts_mut};
 macro_rules! generate_read_fn {
     ($fn_name: ident, $data_type: ty, $byte_type: ty, $type_size: expr, $endian_type: ident) => {
         pub fn $fn_name(input: &[$byte_type]) -> $data_type {

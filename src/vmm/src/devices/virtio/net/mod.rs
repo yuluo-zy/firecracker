@@ -24,6 +24,8 @@ pub mod persist;
 mod tap;
 pub mod test_utils;
 
+pub mod vhost;
+
 mod gen;
 
 pub use tap::{Tap, TapError};

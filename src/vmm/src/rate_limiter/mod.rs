@@ -601,7 +601,8 @@ mod verification {
 
             // In normal rust code, this would not be safe, as the compiler can re-order the fields
             // However, kani will never run any transformations on the code, so this is safe. This
-            // is because kani doesn't use rustc/llvm to compile down to bytecode, but instead
+            // is because kani doesn't use rustc/llvm to compile down to
+            // bytecode, but instead
             // transpiles unoptimized rust MIR to goto-programs, which are then fed to CMBC.
             unsafe { std::mem::transmute(stub) }
         }

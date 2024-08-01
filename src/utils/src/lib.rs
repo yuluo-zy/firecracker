@@ -8,7 +8,8 @@
 pub use vmm_sys_util::ioctl::ioctl_expr;
 pub use vmm_sys_util::{
     epoll, errno, eventfd, fam, generate_fam_struct_impl, ioctl, ioctl_ioc_nr, ioctl_iow_nr, rand,
-    seek_hole, sock_ctrl_msg, syscall, tempdir, tempfile, terminal, ioctl_ior_nr
+    seek_hole, sock_ctrl_msg, syscall, tempdir, tempfile, terminal, ioctl_ior_nr, ioctl_iowr_nr,
+    ioctl_io_nr,
 };
 
 pub mod arg_parser;
