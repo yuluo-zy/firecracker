@@ -13,18 +13,15 @@ use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 
 use libc::EAGAIN;
-use log::{error, warn};
+use log::{debug, error, warn};
 use utils::eventfd::EventFd;
-use utils::net::mac::MacAddr;
+use utils::net::mac::{MAC_ADDR_LEN, MacAddr};
 use utils::u64_to_usize;
 use vm_memory::GuestMemoryError;
 
 use crate::devices::virtio::device::{DeviceState, IrqTrigger, IrqType, VirtioDevice};
 use crate::devices::virtio::gen::virtio_blk::VIRTIO_F_VERSION_1;
-use crate::devices::virtio::gen::virtio_net::{
-    virtio_net_hdr_v1, VIRTIO_NET_F_CSUM, VIRTIO_NET_F_GUEST_CSUM, VIRTIO_NET_F_GUEST_TSO4,
-    VIRTIO_NET_F_GUEST_UFO, VIRTIO_NET_F_HOST_TSO4, VIRTIO_NET_F_HOST_UFO, VIRTIO_NET_F_MAC,
-};
+use crate::devices::virtio::gen::virtio_net::{virtio_net_hdr_v1, VIRTIO_NET_F_CSUM, VIRTIO_NET_F_GUEST_CSUM, VIRTIO_NET_F_GUEST_TSO4, VIRTIO_NET_F_GUEST_UFO, VIRTIO_NET_F_HOST_TSO4, VIRTIO_NET_F_HOST_UFO, VIRTIO_NET_F_MAC, VIRTIO_NET_F_STATUS, VIRTIO_NET_S_LINK_UP, VIRTIO_NET_F_MQ};
 use crate::devices::virtio::gen::virtio_ring::VIRTIO_RING_F_EVENT_IDX;
 use crate::devices::virtio::iovec::IoVecBuffer;
 use crate::devices::virtio::net::metrics::{NetDeviceMetrics, NetMetricsPerDevice};
@@ -44,7 +41,10 @@ use crate::rate_limiter::{BucketUpdate, RateLimiter, TokenType};
 use crate::vstate::memory::{ByteValued, Bytes, GuestMemoryMmap};
 
 const FRAME_HEADER_MAX_LEN: usize = PAYLOAD_OFFSET + ETH_IPV4_FRAME_LEN;
+const CONFIG_SPACE_STATUS_SIZE: usize = 2;
+const MAX_VIRTQUEUE_PAIRS: usize = 2;
 
+const CONFIG_SPACE_MTU_SIZE: usize = 2;
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
 enum FrontendError {
     /// Add user.
@@ -98,6 +98,42 @@ fn init_vnet_hdr(buf: &mut [u8]) {
 #[repr(C)]
 pub struct ConfigSpace {
     pub guest_mac: MacAddr,
+    pub space_status: [u8; CONFIG_SPACE_STATUS_SIZE],
+    pub max_virtqueue_pairs: [u8; MAX_VIRTQUEUE_PAIRS],
+    pub mut_size: [u8; CONFIG_SPACE_MTU_SIZE],
+}
+
+impl ConfigSpace {
+    pub fn setup_config_space(&mut self,
+                              device_name: &str,
+                              guest_mac: Option<MacAddr>,
+                              avail_features: &mut u64,
+                              vq_pairs: u16,
+                              mtu: u16) {
+        if let Some(mac) = guest_mac {
+            self.guest_mac = mac;
+            // When this feature isn't available, the driver generates a random MAC address.
+            // Otherwise, it should attempt to read the device MAC address from the config space.
+            *avail_features |= 1u64 << VIRTIO_NET_F_MAC;
+        }
+
+        // Mark link as up: status only exists if VIRTIO_NET_F_STATUS is set.
+        if *avail_features & (1 << VIRTIO_NET_F_STATUS) != 0 {
+            self.space_status.copy_from_slice(&(VIRTIO_NET_S_LINK_UP as u16).to_le_bytes());
+        }
+
+        // Set max virtqueue pairs, which only exists if VIRTIO_NET_F_MQ is set.
+        if *avail_features & (1 << VIRTIO_NET_F_MQ) != 0 {
+            self.max_virtqueue_pairs.copy_from_slice(&vq_pairs.to_le_bytes());
+        }
+
+        self.mut_size.copy_from_slice(&mtu.to_le_bytes());
+
+        debug!(
+        "config space is set to {:X?}, guest_mac: {:?}, avail_feature: 0x{:X}, vq_pairs: {}, mtu: {}",
+        device_name, guest_mac, avail_features, vq_pairs, mtu
+    );
+    }
 }
 
 // SAFETY: `ConfigSpace` contains only PODs in `repr(C)` or `repr(transparent)`, without padding.
@@ -122,14 +158,14 @@ pub struct Net {
 
     pub(crate) rx_rate_limiter: RateLimiter,
     pub(crate) tx_rate_limiter: RateLimiter,
-// 标识是否有延迟处理的接收帧（数据包）。如果为 true，表示有数据包需要稍后处理。
+    // 标识是否有延迟处理的接收帧（数据包）。如果为 true，表示有数据包需要稍后处理。
     pub(crate) rx_deferred_frame: bool,
 
     rx_bytes_read: usize,
     rx_frame_buf: [u8; MAX_BUFFER_SIZE],
 
     tx_frame_headers: [u8; frame_hdr_len()],
-// 中断触发器，用于通知虚拟机管理程序（VMM）或主机系统网络设备状态变化或需要处理。
+    // 中断触发器，用于通知虚拟机管理程序（VMM）或主机系统网络设备状态变化或需要处理。
     pub(crate) irq_trigger: IrqTrigger,
 
     pub(crate) config_space: ConfigSpace,
@@ -211,12 +247,6 @@ impl Net {
         tx_rate_limiter: RateLimiter,
     ) -> Result<Self, NetError> {
         let tap = Tap::open_named(tap_if_name, false).map_err(NetError::TapOpen)?;
-
-        // Set offload flags to match the virtio features below.
-        // TUN_F_CSUM：校验和卸载
-        // TUN_F_UFO：超大帧卸载
-        // TUN_F_TSO4：IPv4 分段卸载
-        // TUN_F_TSO6：IPv6 分段卸载
         tap.set_offload(gen::TUN_F_CSUM | gen::TUN_F_UFO | gen::TUN_F_TSO4 | gen::TUN_F_TSO6)
             .map_err(NetError::TapSetOffload)?;
         // 获取虚拟网络头部长度：
@@ -639,7 +669,7 @@ impl Net {
                 self.guest_mac,
                 &self.metrics,
             )
-            .unwrap_or(false);
+                .unwrap_or(false);
             if frame_consumed_by_mmds && !self.rx_deferred_frame {
                 // MMDS consumed this frame/request, let's also try to process the response.
                 process_rx_for_mmds = true;
@@ -1524,8 +1554,8 @@ pub mod tests {
             src_mac,
             ETHERTYPE_ARP,
         )
-        .ok()
-        .unwrap();
+            .ok()
+            .unwrap();
         // Set its length to hold an ARP request.
         let mut frame = incomplete_frame.with_payload_len_unchecked(ETH_IPV4_FRAME_LEN);
 

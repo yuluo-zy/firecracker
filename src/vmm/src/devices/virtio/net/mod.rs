@@ -4,7 +4,7 @@
 //! Implements a virtio network device.
 
 use std::io;
-
+use std::sync::Arc;
 use crate::devices::virtio::queue::FIRECRACKER_MAX_QUEUE_SIZE;
 
 /// Maximum size of the frame buffers handled by this device.
@@ -56,4 +56,20 @@ pub enum NetError {
     IO(io::Error),
     /// The VNET header is missing from the frame
     VnetHeaderMissing,
+}
+
+
+pub struct VirtioDeviceInfo {
+    /// Name of the virtio backend device.
+    pub driver_name: String,
+    /// Available features of the virtio backend device.
+    pub avail_features: u64,
+    /// Acknowledged features of the virtio backend device.
+    pub acked_features: u64,
+    /// Array of queue sizes.
+    pub queue_sizes: Arc<Vec<u16>>,
+    /// Space to store device specific configuration data.
+    pub config_space: Vec<u8>,
+    // /// EventManager SubscriberOps to register/unregister epoll events.
+    // pub epoll_manager: EpollManager,
 }

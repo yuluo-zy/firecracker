@@ -15,6 +15,7 @@ use utils::ioctl::{ioctl_with_mut_ref, ioctl_with_ref, ioctl_with_val};
 use utils::{ioctl_ioc_nr, ioctl_iow_nr, ioctl_ior_nr};
 
 use crate::devices::virtio::iovec::IoVecBuffer;
+use crate::devices::virtio::net::device::vnet_hdr_len;
 use crate::devices::virtio::net::gen;
 #[cfg(test)]
 use crate::devices::virtio::net::test_utils::Mocks;
@@ -41,6 +42,7 @@ pub enum TapError {
     GetFeatures,
     /// Error no kernel support for IFF_MULTI_QUEUE available
     KernelSetMultiQueue,
+    MultiqueueTaps,
 }
 
 const TUNTAP: ::std::os::raw::c_uint = 84;
@@ -58,7 +60,7 @@ ioctl_ior_nr!(TUNGETFEATURES, TUNTAP, 207, ::std::os::raw::c_uint);
 pub struct Tap {
     tap_file: File,
     pub(crate) if_name: [u8; IFACE_NAME_MAX_LEN],
-
+    pub(crate) if_flags: std::os::raw::c_short,
     #[cfg(test)]
     pub(crate) mocks: Mocks,
 }
@@ -163,7 +165,7 @@ impl Tap {
             tap_file: tuntap,
             // SAFETY: Safe since only the name is accessed, and it's cloned out.
             if_name: unsafe { ifreq.ifr_ifrn.ifrn_name },
-
+            if_flags: unsafe { ifreq.ifr_ifru.ifru_flags },
             #[cfg(test)]
             mocks: Mocks::default(),
         })
@@ -179,6 +181,23 @@ impl Tap {
         std::str::from_utf8(&self.if_name[..len]).unwrap_or("")
     }
 
+    pub fn into_mq_taps(self, vq_pairs: usize) -> Result<Vec<Self>, TapError> {
+        let mut taps = Vec::new();
+
+        if vq_pairs <= 1 {
+            taps.push(self);
+            return Ok(taps);
+        }
+
+        let if_name = self.if_name_as_str();
+
+        for _ in 0..vq_pairs - 1 {
+            let tap = Self::open_named(if_name, true)?;
+            taps.push(tap);
+        }
+        taps.insert(0, self);
+        Ok(taps)
+    }
     /// Set the offload flags for the tap interface.
     pub fn set_offload(&self, flags: c_uint) -> Result<(), TapError> {
         // SAFETY: ioctl is safe. Called with a valid tap fd, and we check the return.
@@ -187,6 +206,10 @@ impl Tap {
         }
 
         Ok(())
+    }
+
+    pub fn if_flags(&self) -> u32 {
+        self.if_flags as u32
     }
 
     /// Set the size of the vnet hdr.

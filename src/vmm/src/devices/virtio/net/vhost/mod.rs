@@ -9,7 +9,6 @@ mod device;
 mod metrics;
 mod persist;
 
-
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
 pub enum VhostNetError {
     /// Open tap device failed: {0}
@@ -24,6 +23,8 @@ pub enum VhostNetError {
     IO(io::Error),
     /// The VNET header is missing from the frame
     VnetHeaderMissing,
+    VhostOpen(std::io::Error),
+    MissingFlags(String)
 }
 
 pub trait VhostKernHandleBackend: Sized {
