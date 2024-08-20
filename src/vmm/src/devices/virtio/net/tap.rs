@@ -325,6 +325,7 @@ pub mod tests {
         let faulty_tap = Tap {
             tap_file: unsafe { File::from_raw_fd(-2) },
             if_name: [0x01; 16],
+            if_flags: 0,
             mocks: Default::default(),
         };
         assert_eq!(

@@ -10,6 +10,7 @@
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 use event_manager::SubscriberId;
 use log::trace;
 use vm_memory::{GuestAddressSpace, GuestMemoryRegion};
@@ -17,13 +18,15 @@ use crate::devices::virtio::net::{gen, NetError, Tap, VirtioDeviceInfo};
 use vhost::vhost_kern::net::Net as VhostNet;
 use utils::eventfd::EventFd;
 use utils::net::mac::MacAddr;
-use crate::devices::virtio::device::{DeviceState, IrqTrigger};
+use crate::devices::virtio::{ActivateError, TYPE_NET};
+use crate::devices::virtio::device::{DeviceState, IrqTrigger, VirtioDevice};
 use crate::devices::virtio::gen::virtio_net::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_VERSION_1, VIRTIO_NET_F_CSUM, VIRTIO_NET_F_CTRL_VQ, VIRTIO_NET_F_GUEST_CSUM, VIRTIO_NET_F_GUEST_TSO4, VIRTIO_NET_F_GUEST_UFO, VIRTIO_NET_F_HOST_TSO4, VIRTIO_NET_F_HOST_UFO, VIRTIO_NET_F_MAC, VIRTIO_NET_F_MQ, VIRTIO_NET_F_MRG_RXBUF, VIRTIO_NET_F_STATUS, VIRTIO_RING_F_INDIRECT_DESC};
 use crate::devices::virtio::gen::virtio_ring::VIRTIO_RING_F_EVENT_IDX;
 use crate::devices::virtio::net::device::{ConfigSpace, vnet_hdr_len};
 use crate::devices::virtio::net::vhost::VhostNetError;
 use crate::devices::virtio::queue::Queue;
 use crate::rate_limiter::RateLimiter;
+use crate::vstate::memory::GuestMemoryMmap;
 
 const NET_DRIVER_NAME: &str = "vhost-net";
 // Epoll token for control queue
@@ -190,5 +193,91 @@ impl Net {
         tap.set_vnet_hdr_size(vnet_hdr_size)
             .map_err(VhostNetError::TapSetVnetHdrSize)?;
         Self::new_with_tap(id, tap, guest_mac, queue_sizes, rx_rate_limiter, tx_rate_limiter)
+    }
+}
+
+impl VirtioDevice for Net {
+    fn avail_features(&self) -> u64 {
+        self.avail_features
+    }
+
+    fn acked_features(&self) -> u64 {
+        self.acked_features
+    }
+
+    fn set_acked_features(&mut self, acked_features: u64) {
+        self.acked_features = acked_features;
+    }
+
+    fn device_type(&self) -> u32 {
+        TYPE_NET
+    }
+
+    fn queues(&self) -> &[Queue] {
+        &self.queues
+    }
+
+    fn queues_mut(&mut self) -> &mut [Queue] {
+        &mut self.queues
+    }
+
+    fn queue_events(&self) -> &[EventFd] {
+        &self.queue_evts
+    }
+
+    fn interrupt_evt(&self) -> &EventFd {
+        &self.irq_trigger.irq_evt
+    }
+
+    fn interrupt_status(&self) -> Arc<AtomicU32> {
+        self.irq_trigger.irq_status.clone()
+    }
+
+    fn read_config(&self, offset: u64, data: &mut [u8]) {
+        // let config_space_bytes = self.config_space.as_slice();
+        // let config_len = config_space_bytes.len() as u64;
+        // if offset >= config_len {
+        //     error!("Failed to read config space");
+        //     return;
+        // }
+        // if let Some(end) = offset.checked_add(data.len() as u64) {
+        //     // This write can't fail, offset and end are checked against config_len.
+        //     data.write_all(
+        //         &config_space_bytes[u64_to_usize(offset)..u64_to_usize(cmp::min(end, config_len))],
+        //     )
+        //         .unwrap();
+        // }
+    }
+
+    fn write_config(&mut self, offset: u64, data: &[u8]) {
+        // let config_space_bytes = self.config_space.as_mut_slice();
+        // let start = usize::try_from(offset).ok();
+        // let end = start.and_then(|s| s.checked_add(data.len()));
+        // let Some(dst) = start
+        //     .zip(end)
+        //     .and_then(|(start, end)| config_space_bytes.get_mut(start..end))
+        // else {
+        //     error!("Failed to write config space");
+        //     return;
+        // };
+        //
+        // dst.copy_from_slice(data);
+        // self.guest_mac = Some(self.config_space.guest_mac);
+    }
+
+    fn activate(&mut self, mem: GuestMemoryMmap) -> Result<(), ActivateError> {
+        self.setup_vhost_handle(&mem)
+            .map_err(ActivateError::Vhost)?;
+
+        if self.activate_evt.write(1).is_err() {
+            error!("Net: Cannot write to activate_evt");
+            return Err(ActivateError::BadActivate);
+        }
+        self.device_state = DeviceState::Activated(mem);
+        Ok(())
+    }
+
+    fn is_activated(&self) -> bool {
+        self.device_state.is_activated()
     }
 }
