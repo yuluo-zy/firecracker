@@ -16,11 +16,12 @@ use log::trace;
 use vm_memory::{GuestAddressSpace, GuestMemoryRegion};
 use crate::devices::virtio::net::{gen, NetError, Tap, VirtioDeviceInfo};
 use vhost::vhost_kern::net::Net as VhostNet;
+use vhost::VhostBackend;
 use utils::eventfd::EventFd;
 use utils::net::mac::MacAddr;
 use crate::devices::virtio::{ActivateError, TYPE_NET};
 use crate::devices::virtio::device::{DeviceState, IrqTrigger, VirtioDevice};
-use crate::devices::virtio::gen::virtio_net::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_VERSION_1, VIRTIO_NET_F_CSUM, VIRTIO_NET_F_CTRL_VQ, VIRTIO_NET_F_GUEST_CSUM, VIRTIO_NET_F_GUEST_TSO4, VIRTIO_NET_F_GUEST_UFO, VIRTIO_NET_F_HOST_TSO4, VIRTIO_NET_F_HOST_UFO, VIRTIO_NET_F_MAC, VIRTIO_NET_F_MQ, VIRTIO_NET_F_MRG_RXBUF, VIRTIO_NET_F_STATUS, VIRTIO_RING_F_INDIRECT_DESC};
+use crate::devices::virtio::gen::virtio_net::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_VERSION_1, VIRTIO_NET_F_CSUM, VIRTIO_NET_F_CTRL_VQ, VIRTIO_NET_F_GUEST_CSUM, VIRTIO_NET_F_GUEST_ECN, VIRTIO_NET_F_GUEST_TSO4, VIRTIO_NET_F_GUEST_TSO6, VIRTIO_NET_F_GUEST_UFO, VIRTIO_NET_F_HOST_TSO4, VIRTIO_NET_F_HOST_UFO, VIRTIO_NET_F_MAC, VIRTIO_NET_F_MQ, VIRTIO_NET_F_MRG_RXBUF, VIRTIO_NET_F_STATUS, VIRTIO_RING_F_INDIRECT_DESC};
 use crate::devices::virtio::gen::virtio_ring::VIRTIO_RING_F_EVENT_IDX;
 use crate::devices::virtio::net::device::{ConfigSpace, vnet_hdr_len};
 use crate::devices::virtio::net::vhost::VhostNetError;
@@ -89,6 +90,7 @@ pub struct Net
     pub(crate) avail_features: u64, // 表示网络设备支持的可用功能，是一个位掩码，编码了设备支持的所有特性。
     pub(crate) acked_features: u64, // 表示已确认的功能集，是一个位掩码，编码了设备驱动程序已确认并使用的特性。
 
+    handles: Vec<VhostNet<GuestMemoryMmap>>,
     pub(crate) queues: Vec<Queue>,
     pub(crate) queue_evts: Vec<EventFd>,
 
@@ -160,6 +162,7 @@ impl Net {
             id: id.clone(),
             avail_features,
             acked_features: 0u64,
+            handles: vec![],
             queues,
             queue_evts,
             rx_rate_limiter,
@@ -194,6 +197,59 @@ impl Net {
             .map_err(VhostNetError::TapSetVnetHdrSize)?;
         Self::new_with_tap(id, tap, guest_mac, queue_sizes, rx_rate_limiter, tx_rate_limiter)
     }
+
+    fn do_device_activate(&mut self, mem: GuestMemoryMmap, vq_pairs: usize) -> Result<(), VhostNetError> {
+        if self.handles.is_empty() {
+            for _ in 0..vq_pairs {
+                self.handles.push(VhostNet::<GuestMemoryMmap>::new(mem.clone())
+                                      .map_err(|error| VhostNetError::VhostError(error))?);
+            }
+        }
+        self.setup_vhost_backend(mem, vq_pairs)?;
+        Ok(())
+    }
+
+    fn setup_vhost_backend(&mut self, mem: GuestMemoryMmap,vq_pairs: usize) -> Result<(), VhostNetError>{
+        for idx in 0..vq_pairs {
+            let handle = &mut self.handles[idx];
+            handle
+                .set_owner()
+                .map_err(|err| VhostNetError::VhostError(err))?;
+            // self.device_info.acked_features()：这个方法调用返回设备已确认的特性。这些特性是设备和驱动程序在初始化期间协商的结果。
+            // avail_features：这是当前可用的特性集，可能是来自驱动程序或设备的特性。
+            // &（按位与操作符）：按位与操作符用于计算两个特性集合的交集。也就是说，features 变量将包含设备已确认并且当前可用的特性。
+            let avail_features = handle.get_features().map_err(|err| VhostNetError::VhostError(err))?;
+            let features = self.acked_features & avail_features;
+            handle.set_features(features).map_err(|err| VhostNetError::VhostError(err))?;
+            let tap = &self.taps[idx];
+            tap.set_offload(virtio_features_to_tap_offload(self.acked_features))
+                .map_err(|err| VhostNetError::VhostError(err))?;
+
+        }
+        Ok(())
+    }
+}
+
+fn virtio_features_to_tap_offload(features: u64) -> u32 {
+    let mut tap_offloads: u32 = 0;
+
+    if features & (1 << VIRTIO_NET_F_GUEST_CSUM) != 0 {
+        tap_offloads |= gen::TUN_F_CSUM;
+    }
+    if features & (1 << VIRTIO_NET_F_GUEST_TSO4) != 0 {
+        tap_offloads |= gen::TUN_F_TSO4;
+    }
+    if features & (1 << VIRTIO_NET_F_GUEST_TSO6) != 0 {
+        tap_offloads |= gen::TUN_F_TSO6;
+    }
+    if features & (1 << VIRTIO_NET_F_GUEST_ECN) != 0 {
+        tap_offloads |= gen::TUN_F_TSO_ECN;
+    }
+    if features & (1 << VIRTIO_NET_F_GUEST_UFO) != 0 {
+        tap_offloads |= gen::TUN_F_UFO;
+    }
+
+    tap_offloads
 }
 
 impl VirtioDevice for Net {
@@ -266,14 +322,18 @@ impl VirtioDevice for Net {
     }
 
     fn activate(&mut self, mem: GuestMemoryMmap) -> Result<(), ActivateError> {
-        self.setup_vhost_handle(&mem)
-            .map_err(ActivateError::Vhost)?;
+        trace!(target: "vhost-net", "{}: Net::activate()", self.id);
+        let vq_pairs = self.taps.len();
 
-        if self.activate_evt.write(1).is_err() {
-            error!("Net: Cannot write to activate_evt");
-            return Err(ActivateError::BadActivate);
-        }
-        self.device_state = DeviceState::Activated(mem);
+        self.do_device_activate(mem, vq_pairs);
+        // self.setup_vhost_handle(&mem)
+        //     .map_err(ActivateError::Vhost)?;
+        //
+        // if self.activate_evt.write(1).is_err() {
+        //     error!("Net: Cannot write to activate_evt");
+        //     return Err(ActivateError::BadActivate);
+        // }
+        // self.device_state = DeviceState::Activated(mem);
         Ok(())
     }
 

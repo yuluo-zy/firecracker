@@ -24,7 +24,9 @@ pub enum VhostNetError {
     /// The VNET header is missing from the frame
     VnetHeaderMissing,
     VhostOpen(std::io::Error),
-    MissingFlags(String)
+    MissingFlags(String),
+    #[error("vhost error: {0}")]
+    VhostError(#[source] vhost::Error),
 }
 
 pub trait VhostKernHandleBackend: Sized {
